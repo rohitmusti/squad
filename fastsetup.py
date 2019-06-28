@@ -24,6 +24,9 @@ from subprocess import run
 from tqdm import tqdm
 from zipfile import ZipFile
 from multiprocessing import Pool, cpu_count
+from itertools import repeat
+
+import time # to be deleted
 
 
 def download_url(url, output_path, show_progress=True):
@@ -69,7 +72,7 @@ def download(args):
                     zip_fh.extractall(extracted_path)
 
     print('Downloading spacy language model...')
-    run(['python', '-m', 'spacy', 'download', 'en'])
+    run(['python3', '-m', 'spacy', 'download', 'en'])
 
 def word_tokenize(sent):
     doc = nlp(sent)
@@ -88,53 +91,18 @@ def convert_idx(text, tokens):
         current += len(token)
     return spans
 
+def _multi_answer(idx, span, answer_end, answer_start):
+    if not (answer_end <= span[0] or answer_start >= span[1]):
+        return idx
 
 def process_file(filename, data_type, word_counter, char_counter):
     print(f"Pre-processing {data_type} examples...")
     examples = []
     eval_examples = {}
     total = 0
-    with open(filename, "r") as fh, Pool(processes=cpu_count()) as pool:
+    with open(filename, "r") as fh, Pool(processes=4) as p:
+
         source = json.load(fh)
-
-        def _multi_processfile(qa):
-            total += 1
-            ques = qa["question"].replace(
-                "''", '" ').replace("``", '" ')
-            ques_tokens = word_tokenize(ques)
-            ques_chars = [list(token) for token in ques_tokens]
-            for token in ques_tokens:
-                word_counter[token] += 1
-                for char in token:
-                    char_counter[char] += 1
-            y1s, y2s = [], []
-            answer_texts = []
-            for answer in qa["answers"]:
-                answer_text = answer["text"]
-                answer_start = answer['answer_start']
-                answer_end = answer_start + len(answer_text)
-                answer_texts.append(answer_text)
-                answer_span = []
-                for idx, span in enumerate(spans):
-                    if not (answer_end <= span[0] or answer_start >= span[1]):
-                        answer_span.append(idx)
-                y1, y2 = answer_span[0], answer_span[-1]
-                y1s.append(y1)
-                y2s.append(y2)
-            example = {"context_tokens": context_tokens,
-                       "context_chars": context_chars,
-                       "ques_tokens": ques_tokens,
-                       "ques_chars": ques_chars,
-                       "y1s": y1s,
-                       "y2s": y2s,
-                       "id": total}
-            examples.append(example)
-            eval_examples[str(total)] = {"context": context,
-                                         "question": ques,
-                                         "spans": spans,
-                                         "answers": answer_texts,
-                                         "uuid": qa["id"]}
-
         for article in tqdm(source["data"]):
             for para in article["paragraphs"]:
                 context = para["context"].replace(
@@ -147,7 +115,49 @@ def process_file(filename, data_type, word_counter, char_counter):
                     for char in token:
                         char_counter[char] += len(para["qas"])
                 for qa in para["qas"]:
-                    pool.map(_multi_processfile, qa)
+                    total += 1
+                    ques = qa["question"].replace(
+                        "''", '" ').replace("``", '" ')
+                    ques_tokens = word_tokenize(ques)
+                    ques_chars = [list(token) for token in ques_tokens]
+                    for token in ques_tokens:
+                        word_counter[token] += 1
+                        for char in token:
+                            char_counter[char] += 1
+                    y1s, y2s = [], []
+                    answer_texts = []
+                    for answer in qa["answers"]:
+                        answer_text = answer["text"]
+                        answer_start = answer['answer_start']
+                        answer_end = answer_start + len(answer_text)
+                        answer_texts.append(answer_text)
+                        answer_span = []
+                        answer_span = p.starmap(_multi_answer, zip([i for i in range(len(spans))],
+                                                               spans,
+                                                               repeat(answer_end, len(spans)),
+                                                               repeat(answer_start, len(spans))))
+
+#                        for idx, span in enumerate(spans):
+#                            if not (answer_end <= span[0] or answer_start >= span[1]):
+#                                answer_span.append(idx)
+                        y1, y2 = answer_span[0], answer_span[-1]
+                        y1s.append(y1)
+                        y2s.append(y2)
+                    example = {"context_tokens": context_tokens,
+                               "context_chars": context_chars,
+                               "ques_tokens": ques_tokens,
+                               "ques_chars": ques_chars,
+                               "y1s": y1s,
+                               "y2s": y2s,
+                               "id": total}
+                    examples.append(example)
+                    eval_examples[str(total)] = {"context": context,
+                                                 "question": ques,
+                                                 "spans": spans,
+                                                 "answers": answer_texts,
+                                                 "uuid": qa["id"]}
+
+
         print(f"{len(examples)} questions in total")
     return examples, eval_examples
 
@@ -158,18 +168,13 @@ def get_embedding(counter, data_type, limit=-1, emb_file=None, vec_size=None, nu
     filtered_elements = [k for k, v in counter.items() if v > limit]
     if emb_file is not None:
         assert vec_size is not None
-        with open(emb_file, "r", encoding="utf-8") as fh, Pool(processes=cpu_count()) as pool:
-
-            def _multi_embedding(line):
+        with open(emb_file, "r", encoding="utf-8") as fh:
+            for line in tqdm(fh, total=num_vectors):
                 array = line.split()
                 word = "".join(array[0:-vec_size])
                 vector = list(map(float, array[-vec_size:]))
                 if word in counter and counter[word] > limit:
                     embedding_dict[word] = vector
-
-            for line in tqdm(fh, total=num_vectors):
-                pool.map(_multi_embedding, line)
-
         print(f"{len(embedding_dict)} / {len(filtered_elements)} tokens have corresponding {data_type} embedding vector")
     else:
         assert vec_size is not None
@@ -252,8 +257,36 @@ def convert_to_features(args, data, word2idx_dict, char2idx_dict, is_test):
 def is_answerable(example):
     return len(example['y2s']) > 0 and len(example['y1s']) > 0
 
+def _get_word(word):
+    if word in word2idx_dict:
+        return word2idx_dict[word]
+    elif word.lower() in word2idx_dict:
+        return word2idx_dict[word.lower()]
+    elif word.capitalize() in word2idx_dict:
+        return word2idx_dict[word.capitalize()]
+    elif word.upper() in word2idx_dict:
+        return word2idx_dict[word.upper()]
+#         for each in (word, word.lower(), word.capitalize(), word.upper()):
+#             if each in word2idx_dict:
+#                 return word2idx_dict[each]
+    return 1
+def _get_char(char):
+    if char in char2idx_dict:
+        return char2idx_dict[char]
+    return 1
+def _multi_context_getchar(i, token):
+    for j, char in enumerate(token):
+        if j == char_limit:
+            break
+        context_char_idx[i, j] = _get_char(char)
+def _multi_ques_getchar(i, token):
+    for j, char in enumerate(token):
+        if j == char_limit:
+            break
+        ques_char_idx[i, j] = _get_char(char)
 
 def build_features(args, examples, data_type, out_file, word2idx_dict, char2idx_dict, is_test=False):
+    global char_limit, context_char_idx, ques_char_idx
     para_limit = args.test_para_limit if is_test else args.para_limit
     ques_limit = args.test_ques_limit if is_test else args.ques_limit
     ans_limit = args.ans_limit
@@ -289,28 +322,6 @@ def build_features(args, examples, data_type, out_file, word2idx_dict, char2idx_
 
         total += 1
 
-        def _get_word(word):
-            for each in (word, word.lower(), word.capitalize(), word.upper()):
-                if each in word2idx_dict:
-                    return word2idx_dict[each]
-            return 1
-
-        def _get_char(char):
-            if char in char2idx_dict:
-                return char2idx_dict[char]
-            return 1
-
-        def _multi_context_getchar(token):
-            for j, char in enumerate(token):
-                if j == char_limit:
-                    break
-                context_char_idx[i, j] = _get_char(char)
-
-        def _multi_ques_getchar(token):
-            for j, char in enumerate(token):
-                if j == char_limit:
-                    break
-                ques_char_idx[i, j] = _get_char(char)
 
         context_idx = np.zeros([para_limit], dtype=np.int32)
         context_char_idx = np.zeros([para_limit, char_limit], dtype=np.int32)
@@ -323,19 +334,19 @@ def build_features(args, examples, data_type, out_file, word2idx_dict, char2idx_
 #        for i, token in enumerate(example["ques_tokens"]):
 #            ques_idx[i] = _get_word(token)
 
-        with Pool(processes=cpu_count()) as pool:
-            context_idx = pool.map(_get_word, example["context_tokens"])
+        with Pool(processes=4) as p:
+            context_idx = p.map(_get_word, example["context_tokens"])
             context_idx = np.pad(array=context_idx, pad_width=[0, (para_limit - len(context_idx))], mode='constant')
-            ques_idx = pool.map(_get_word, example["ques_tokens"](token))
+            ques_idx = p.map(_get_word, example["ques_tokens"])
             ques_idx = np.pad(array=context_idx, pad_width=[0, (para_limit - len(ques_idx))], mode='constant')
-            pool.map(_multi_context_getchar, example["context_chars"])
-            context_char_idx = np.pad(array=context_char_idx, 
-                                      pad_width=[0, para_limit - context_char_idx.shape[0]][0, char_limit - context_char_idx.shape[1]], 
-                                      mode='constant')
-            pool.map(_multi_ques_getchar, example["context_chars"])
-            ques_char_idx = np.pad(array=ques_char_idx, 
-                                   pad_width=[0, para_limit - ques_char_idx.shape[0]][0, char_limit - ques_char_idx.shape[1]], 
-                                   mode='constant')
+            p.starmap(_multi_context_getchar, zip([i for i in range(len(example["context_chars"]))], example["context_chars"]))
+#            context_char_idx = np.pad(array=context_char_idx, 
+#                                      pad_width=[0, para_limit - context_char_idx.shape[0]][0, char_limit - context_char_idx.shape[1]], 
+#                                      mode='constant')
+            p.starmap(_multi_ques_getchar, zip([i for i in range(len(example["ques_chars"]))], example["ques_chars"]))
+#            ques_char_idx = np.pad(array=ques_char_idx, 
+#                                   pad_width=[0, para_limit - ques_char_idx.shape[0]][0, char_limit - ques_char_idx.shape[1]], 
+#                                   mode='constant')
 
 
         context_idxs.append(context_idx)
@@ -374,6 +385,7 @@ def save(filename, obj, message=None):
 
 def pre_process(args):
     # Process training set and use it to decide on the word/character vocabularies
+    global word2idx_dict, char2idx_dict
     word_counter, char_counter = Counter(), Counter()
     train_examples, train_eval = process_file(args.train_file, "train", word_counter, char_counter)
     word_emb_mat, word2idx_dict = get_embedding(
@@ -402,6 +414,7 @@ def pre_process(args):
 
 
 if __name__ == '__main__':
+    start_time = time.time() # to be deleted
     # Get command-line args
     args_ = get_setup_args()
 
@@ -420,3 +433,5 @@ if __name__ == '__main__':
     glove_ext = f'.txt' if glove_dir.endswith('d') else f'.{args_.glove_dim}d.txt'
     args_.glove_file = os.path.join(glove_dir, os.path.basename(glove_dir) + glove_ext)
     pre_process(args_)
+
+    print(f"The multi-processing took: {time.time() - start_time}") # to be deleted

@@ -24,6 +24,8 @@ from subprocess import run
 from tqdm import tqdm
 from zipfile import ZipFile
 
+import time # to be deleted
+
 
 def download_url(url, output_path, show_progress=True):
     class DownloadProgressBar(tqdm):
@@ -68,7 +70,7 @@ def download(args):
                     zip_fh.extractall(extracted_path)
 
     print('Downloading spacy language model...')
-    run(['python', '-m', 'spacy', 'download', 'en'])
+    run(['python3', '-m', 'spacy', 'download', 'en'])
 
 def word_tokenize(sent):
     doc = nlp(sent)
@@ -376,6 +378,8 @@ def pre_process(args):
 
 
 if __name__ == '__main__':
+    start_time = time.time()
+
     # Get command-line args
     args_ = get_setup_args()
 
@@ -394,3 +398,5 @@ if __name__ == '__main__':
     glove_ext = f'.txt' if glove_dir.endswith('d') else f'.{args_.glove_dim}d.txt'
     args_.glove_file = os.path.join(glove_dir, os.path.basename(glove_dir) + glove_ext)
     pre_process(args_)
+
+    print(f"The original took: {time.time() - start_time}") # to be deleted
