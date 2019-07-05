@@ -2,7 +2,7 @@
 
 Usage:
     > source activate squad
-    > python setup.py
+    > python3 setup.py
 
 Pre-processing code adapted from:
     > https://github.com/HKUST-KnowComp/R-Net/blob/master/prepro.py
@@ -68,7 +68,7 @@ def download(args):
                     zip_fh.extractall(extracted_path)
 
     print('Downloading spacy language model...')
-    run(['python', '-m', 'spacy', 'download', 'en'])
+    run(['python3', '-m', 'spacy', 'download', 'en'])
 
 def word_tokenize(sent):
     doc = nlp(sent)
