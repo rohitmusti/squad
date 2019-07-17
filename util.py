@@ -74,9 +74,7 @@ class SQuAD(data.Dataset):
     def __getitem__(self, idx):
         idx = self.valid_idxs[idx]
         example = (self.context_idxs[idx],
-                   self.context_char_idxs[idx],
                    self.question_idxs[idx],
-                   self.question_char_idxs[idx],
                    self.y1s[idx],
                    self.y2s[idx],
                    self.ids[idx])
