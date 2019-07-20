@@ -164,7 +164,7 @@ def _multi_process_file_helper(article, word_counter, char_counter, total, lock)
     return examples, eval_examples 
 
 
-def multi_process_file(filename, data_type, word_counter, char_counter):
+def multi_process_file(args, filename, data_type, word_counter, char_counter):
     print(f"Pre-processing {data_type} examples...")
     examples = []
     eval_examples = {}
@@ -174,82 +174,14 @@ def multi_process_file(filename, data_type, word_counter, char_counter):
     lock = manager.Lock()
     with open(filename, "r") as fh, pool as p:
         source = json.load(fh)
-        best_time = 100
-        best_cand = 0
-        for cand in range(4,120):
-            start_time = time.time()
-            for batch in tqdm(_get_file_batch_gen(data=source["data"], batch_size=cand)):
-                results = p.map(partial(_multi_process_file_helper, word_counter=word_counter, char_counter=char_counter, total=total, lock=lock), batch)
-                for result in results:
-                    examples.extend(result[0])
-                    eval_examples.update(result[1])
-            total_time = time.time() - start_time
-            if total_time < best_time:
-                best_time -= total_time
-                best_cand = cand
-                print(f"The current best batch size is {best_cand} and it takes {best_time} to complete")
-            del start_time
-            del total_time
+        start_time = time.time()
+        for batch in tqdm(_get_file_batch_gen(data=source["data"], batch_size=args.file_batch_size)):
+            results = p.map(partial(_multi_process_file_helper, word_counter=word_counter, char_counter=char_counter, total=total, lock=lock), batch)
+            for result in results:
+                examples.extend(result[0])
+                eval_examples.update(result[1])
 
     return examples, eval_examples 
-
-def process_file(filename, data_type, word_counter, char_counter):
-    print(f"Pre-processing {data_type} examples...")
-    examples = []
-    eval_examples = {}
-    total = 0
-    with open(filename, "r") as fh:
-        source = json.load(fh)
-        for article in tqdm(source["data"]):
-            for para in article["paragraphs"]:
-                context = para["context"].replace(
-                    "''", '" ').replace("``", '" ')
-                context_tokens = word_tokenize(context)
-                context_chars = [list(token) for token in context_tokens]
-                spans = convert_idx(context, context_tokens)
-                for token in context_tokens:
-                    word_counter[token] += len(para["qas"])
-                    for char in token:
-                        char_counter[char] += len(para["qas"])
-                for qa in para["qas"]:
-                    total += 1
-                    ques = qa["question"].replace(
-                        "''", '" ').replace("``", '" ')
-                    ques_tokens = word_tokenize(ques)
-                    ques_chars = [list(token) for token in ques_tokens]
-                    for token in ques_tokens:
-                        word_counter[token] += 1
-                        for char in token:
-                            char_counter[char] += 1
-                    y1s, y2s = [], []
-                    answer_texts = []
-                    for answer in qa["answers"]:
-                        answer_text = answer["text"]
-                        answer_start = answer['answer_start']
-                        answer_end = answer_start + len(answer_text)
-                        answer_texts.append(answer_text)
-                        answer_span = []
-                        for idx, span in enumerate(spans):
-                            if not (answer_end <= span[0] or answer_start >= span[1]):
-                                answer_span.append(idx)
-                        y1, y2 = answer_span[0], answer_span[-1]
-                        y1s.append(y1)
-                        y2s.append(y2)
-                    example = {"context_tokens": context_tokens,
-                               "context_chars": context_chars,
-                               "ques_tokens": ques_tokens,
-                               "ques_chars": ques_chars,
-                               "y1s": y1s,
-                               "y2s": y2s,
-                               "id": total}
-                    examples.append(example)
-                    eval_examples[str(total)] = {"context": context,
-                                                 "question": ques,
-                                                 "spans": spans,
-                                                 "answers": answer_texts,
-                                                 "uuid": qa["id"]}
-        print(f"{len(examples)} questions in total")
-    return examples, eval_examples
 
 def get_embedding(counter, data_type, limit=-1, emb_file=None, vec_size=None, num_vectors=None):
     print(f"Pre-processing {data_type} vectors...")
@@ -454,12 +386,7 @@ def pre_process(args):
     # Process training set and use it to decide on the word/character vocabularies
     word_counter, char_counter = Counter(), Counter()
 
-    train_examples, train_eval = multi_process_file(args.train_file, "train", word_counter, char_counter)
-
-    start_time = time.time()
-    train_examples_2, train_eval_2 = process_file(args.train_file, "train", word_counter, char_counter)
-    print(f"With multi-processing disabled, getting word embeddings took {time.time() - start_time}...")
-        
+    train_examples, train_eval = multi_process_file(args, args.train_file, "train", word_counter, char_counter)
 
     word_emb_mat, word2idx_dict = get_embedding(
         word_counter, 'word', emb_file=args.glove_file, vec_size=args.glove_dim, num_vectors=args.glove_num_vecs)
@@ -468,11 +395,11 @@ def pre_process(args):
         char_counter, 'char', emb_file=None, vec_size=args.char_dim)
 
     # Process dev and test sets
-    dev_examples, dev_eval = process_file(args.dev_file, "dev", word_counter, char_counter)
+    dev_examples, dev_eval = multi_process_file(args.dev_file, "dev", word_counter, char_counter)
     build_features(args, train_examples, "train", args.train_record_file, word2idx_dict, char2idx_dict)
     dev_meta = build_features(args, dev_examples, "dev", args.dev_record_file, word2idx_dict, char2idx_dict)
     if args.include_test_examples:
-        test_examples, test_eval = process_file(args.test_file, "test", word_counter, char_counter)
+        test_examples, test_eval = multi_process_file(args.test_file, "test", word_counter, char_counter)
         save(args.test_eval_file, test_eval, message="test eval")
         test_meta = build_features(args, test_examples, "test",
                                    args.test_record_file, word2idx_dict, char2idx_dict, is_test=True)

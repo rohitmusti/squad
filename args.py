@@ -80,6 +80,10 @@ def get_setup_args():
                         type=lambda s: s.lower().startswith('t'),
                         default=True,
                         help='Process examples from the test set')
+    parser.add_argument('--file_batch_size',
+                        type=int,
+                        default=18,
+                        help='This is the default batch size for multi-processing files during setup')
 
     args = parser.parse_args()
 
