@@ -11,6 +11,7 @@ Author:
     Chris Chute (chute@stanford.edu)
 """
 
+import multiprocessing as mp
 import numpy as np
 import os
 import spacy
@@ -20,12 +21,10 @@ import urllib.request
 from args import get_setup_args
 from codecs import open
 from collections import Counter
+from functools import partial
 from subprocess import run
 from tqdm import tqdm
 from zipfile import ZipFile
-
-import multiprocessing as mp
-from functools import partial
 
 
 def download_url(url, output_path, show_progress=True):
