@@ -83,7 +83,7 @@ def get_setup_args():
     parser.add_argument('--file_batch_size',
                         type=int,
                         default=18,
-                        help='This is the default batch size for multi-processing files during setup')
+                        help='Batch size for multi-processing files')
 
     args = parser.parse_args()
 
